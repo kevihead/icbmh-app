@@ -22,6 +22,7 @@ import {
     CommandList,
     CommandSeparator,
     CommandShortcut,
+    Command,
 } from "@/components/ui/command";
 import { Button } from "@/components/ui/button";
 import { MOCK_SESSIONS, MOCK_ABSTRACTS } from "@/lib/mock-data";
@@ -29,6 +30,7 @@ import { useRouter } from "next/navigation";
 
 export function GlobalSearch() {
     const [open, setOpen] = React.useState(false);
+    const [searchQuery, setSearchQuery] = React.useState("");
     const router = useRouter();
 
     React.useEffect(() => {
@@ -45,8 +47,46 @@ export function GlobalSearch() {
 
     const runCommand = React.useCallback((command: () => unknown) => {
         setOpen(false);
+        setSearchQuery("");
         command();
     }, []);
+
+    // Filter sessions and papers based on search query
+    const filteredSessions = React.useMemo(() => {
+        if (!searchQuery) return MOCK_SESSIONS.filter(s => !s.isService).slice(0, 8);
+        
+        const query = searchQuery.toLowerCase();
+        return MOCK_SESSIONS.filter(s => 
+            !s.isService && (
+                s.title.toLowerCase().includes(query) ||
+                s.description?.toLowerCase().includes(query) ||
+                s.track?.toLowerCase().includes(query) ||
+                s.location?.toLowerCase().includes(query) ||
+                s.speakers?.some(speaker => 
+                    speaker.name.toLowerCase().includes(query) ||
+                    speaker.affiliation?.toLowerCase().includes(query) ||
+                    speaker.bio?.toLowerCase().includes(query)
+                )
+            )
+        ).slice(0, 10);
+    }, [searchQuery]);
+
+    const filteredPapers = React.useMemo(() => {
+        if (!searchQuery) return MOCK_ABSTRACTS.slice(0, 8);
+        
+        const query = searchQuery.toLowerCase();
+        return MOCK_ABSTRACTS.filter(p => 
+            p.title.toLowerCase().includes(query) ||
+            p.authors.some(a => a.toLowerCase().includes(query)) ||
+            p.keywords?.some(k => k.toLowerCase().includes(query)) ||
+            p.body.toLowerCase().includes(query) ||
+            // Extract university/affiliation from author names (format: "Name (University)")
+            p.authors.some(a => {
+                const affiliationMatch = a.match(/\(([^)]+)\)/);
+                return affiliationMatch && affiliationMatch[1].toLowerCase().includes(query);
+            })
+        ).slice(0, 10);
+    }, [searchQuery]);
 
     return (
         <>
@@ -62,27 +102,68 @@ export function GlobalSearch() {
                 </kbd>
             </Button>
             <CommandDialog open={open} onOpenChange={setOpen}>
-                <CommandInput placeholder="Type a command or search..." />
-                <CommandList>
-                    <CommandEmpty>No results found.</CommandEmpty>
-                    <CommandGroup heading="Sessions">
-                        {MOCK_SESSIONS.slice(0, 5).map(session => (
-                            <CommandItem key={session.id} onSelect={() => runCommand(() => router.push(`/schedule?highlight=${session.id}`))}>
-                                <Calendar className="mr-2 h-4 w-4" />
-                                <span>{session.title}</span>
-                            </CommandItem>
-                        ))}
-                    </CommandGroup>
-                    <CommandSeparator />
-                    <CommandGroup heading="Papers">
-                        {MOCK_ABSTRACTS?.slice(0, 5).map(paper => (
-                            <CommandItem key={paper.id} onSelect={() => runCommand(() => router.push(`/papers?highlight=${paper.id}`))}>
-                                <FileText className="mr-2 h-4 w-4" />
-                                <span>{paper.title}</span>
-                            </CommandItem>
-                        ))}
-                    </CommandGroup>
-                </CommandList>
+                <Command shouldFilter={false}>
+                    <CommandInput 
+                        placeholder="Search sessions, papers, authors..." 
+                        value={searchQuery}
+                        onValueChange={setSearchQuery}
+                    />
+                    <CommandList>
+                        <CommandEmpty>No results found.</CommandEmpty>
+                        {filteredSessions.length > 0 && (
+                            <>
+                                <CommandGroup heading={`Sessions (${filteredSessions.length})`}>
+                                    {filteredSessions.map(session => {
+                                        const speakerNames = session.speakers?.map(s => s.name).join(", ");
+                                        return (
+                                            <CommandItem 
+                                                key={session.id} 
+                                                value={`session-${session.id}`}
+                                                onSelect={() => runCommand(() => router.push(`/schedule?session=${session.id}`))}
+                                            >
+                                                <Calendar className="mr-2 h-4 w-4 flex-shrink-0" />
+                                                <div className="flex flex-col items-start overflow-hidden">
+                                                    <span className="font-medium truncate w-full">{session.title}</span>
+                                                    {speakerNames && (
+                                                        <span className="text-xs text-muted-foreground truncate w-full">
+                                                            {speakerNames} • {session.location || session.track}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </CommandItem>
+                                        );
+                                    })}
+                                </CommandGroup>
+                                <CommandSeparator />
+                            </>
+                        )}
+                        {filteredPapers.length > 0 && (
+                            <CommandGroup heading={`Papers (${filteredPapers.length})`}>
+                                {filteredPapers.map(paper => {
+                                    const firstAuthor = paper.authors[0];
+                                    const authorCount = paper.authors.length;
+                                    const authorText = authorCount > 1 ? `${firstAuthor} +${authorCount - 1}` : firstAuthor;
+                                    return (
+                                        <CommandItem 
+                                            key={paper.id} 
+                                            value={`paper-${paper.id}`}
+                                            onSelect={() => runCommand(() => router.push(`/papers?paper=${paper.id}`))}
+                                        >
+                                            <FileText className="mr-2 h-4 w-4 flex-shrink-0" />
+                                            <div className="flex flex-col items-start overflow-hidden">
+                                                <span className="font-medium truncate w-full">{paper.title}</span>
+                                                <span className="text-xs text-muted-foreground truncate w-full">
+                                                    {authorText}
+                                                    {paper.keywords && paper.keywords.length > 0 && ` • ${paper.keywords[0]}`}
+                                                </span>
+                                            </div>
+                                        </CommandItem>
+                                    );
+                                })}
+                            </CommandGroup>
+                        )}
+                    </CommandList>
+                </Command>
             </CommandDialog>
         </>
     );

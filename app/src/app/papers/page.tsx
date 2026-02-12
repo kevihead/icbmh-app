@@ -186,7 +186,7 @@ function PapersContent() {
                                             </div>
                                             <div>
                                                 <Link 
-                                                    href={`/schedule#day${new Date(session.startTime.seconds * 1000).getDate() - 6}`} 
+                                                    href={`/schedule?session=${session.id}`} 
                                                     className="text-primary hover:underline font-semibold"
                                                 >
                                                     {session.title}

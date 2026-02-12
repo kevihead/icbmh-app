@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { MOCK_SESSIONS } from "@/lib/mock-data";
 import { Session } from "@/types/firestore";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,7 +11,7 @@ import { AgendaSessionCard } from "@/components/schedule/agenda-session-card";
 import { Save, Calendar, Star } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { AuthDialog } from "@/components/auth/auth-dialog";
-import { saveAgendaToFirestore, loadAgendaFromFirestore, syncAgenda } from "@/lib/agenda";
+import { saveAgendaToFirestore, loadAgendaFromFirestore } from "@/lib/agenda";
 
 const DAYS = [
     { id: "day1", label: "Tue, 07 July", date: 7 },
@@ -19,12 +20,109 @@ const DAYS = [
 ];
 
 export default function SchedulePage() {
-    const { user } = useAuth();
+    return (
+        <Suspense fallback={<div className="container mx-auto py-8 px-4 text-center">Loading...</div>}>
+            <ScheduleContent />
+        </Suspense>
+    );
+}
+
+function ScheduleContent() {
+    const { user, loading: authLoading } = useAuth();
+    const searchParams = useSearchParams();
     const [selectedSessions, setSelectedSessions] = useState<string[]>([]);
     const [activeTab, setActiveTab] = useState("day1");
     const [showAuthDialog, setShowAuthDialog] = useState(false);
     const [justSaved, setJustSaved] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+    const [highlightedSession, setHighlightedSession] = useState<string | null>(null);
+    const [pendingScrollSession, setPendingScrollSession] = useState<string | null>(null);
+
+    const waitForAndScrollToSession = (sessionId: string) => {
+        const selector = `#session-${CSS.escape(sessionId)}`;
+        const startedAt = performance.now();
+        const maxWaitMs = 7000;
+
+        const scrollingElement = () => (document.scrollingElement ?? document.documentElement);
+
+        const isLaidOutAndVisible = (el: HTMLElement) => {
+            // If an element is display:none, offsetParent is null and client rects are empty.
+            if (el.getClientRects().length === 0) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+
+            const cs = getComputedStyle(el);
+            if (cs.display === "none" || cs.visibility === "hidden") return false;
+
+            return true;
+        };
+
+        const pickBestTarget = () => {
+            const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
+            if (candidates.length === 0) return null;
+
+            // Prefer the element that is actually laid out at this breakpoint.
+            const laidOut = candidates.find(isLaidOutAndVisible);
+            return laidOut ?? candidates[0];
+        };
+
+        const scrollVerticalToElement = (el: HTMLElement) => {
+            const se = scrollingElement();
+            const rect = el.getBoundingClientRect();
+            const targetTop = se.scrollTop + rect.top - window.innerHeight / 2;
+            se.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+        };
+
+        const scrollHorizontalIntoViewIfNeeded = (el: HTMLElement) => {
+            const scroller = el.closest<HTMLElement>(".overflow-x-auto");
+            if (!scroller || getComputedStyle(scroller).display === "none") return;
+
+            const scrollerRect = scroller.getBoundingClientRect();
+            const elRect = el.getBoundingClientRect();
+
+            if (elRect.left >= scrollerRect.left && elRect.right <= scrollerRect.right) return;
+
+            const elCenter = elRect.left + elRect.width / 2;
+            const scrollerCenter = scrollerRect.left + scrollerRect.width / 2;
+            scroller.scrollBy({ left: elCenter - scrollerCenter, behavior: "smooth" });
+        };
+
+        const tick = () => {
+            const el = pickBestTarget();
+
+            if (el && isLaidOutAndVisible(el)) {
+                scrollVerticalToElement(el);
+                requestAnimationFrame(() => {
+                    scrollHorizontalIntoViewIfNeeded(el);
+                    // Re-assert vertical position after any layout/horizontal adjustments
+                    scrollVerticalToElement(el);
+                });
+                return;
+            }
+
+            if (performance.now() - startedAt >= maxWaitMs) return;
+            requestAnimationFrame(tick);
+        };
+
+        requestAnimationFrame(tick);
+    };
+
+    const handleSessionHighlight = (sessionId: string) => {
+        setHighlightedSession(sessionId);
+
+        const session = MOCK_SESSIONS.find((s) => s.id === sessionId);
+        if (session) {
+            const sessionDate = session.startTime.toDate().getDate();
+            const dayNum = sessionDate === 7 ? 1 : sessionDate === 8 ? 2 : 3;
+            setActiveTab(`day${dayNum}`);
+        }
+
+        // Scroll once the element is actually in the DOM (tab content + grid).
+        // Using rAF polling avoids brittle timeout tuning and survives auth re-renders.
+        waitForAndScrollToSession(sessionId);
+
+        setTimeout(() => setHighlightedSession(null), 3500);
+    };
 
     // Load agenda when user logs in or on mount
     useEffect(() => {
@@ -56,16 +154,55 @@ export default function SchedulePage() {
 
         loadAgenda();
         
-        // Check for hash to navigate to specific day
+        // Check for hash to navigate to specific day and/or session on mount
         const hash = window.location.hash;
         if (hash) {
+            // Check for day navigation
             const dayMatch = hash.match(/#day(\d+)/);
             if (dayMatch) {
                 const dayNum = dayMatch[1];
                 setActiveTab(`day${dayNum}`);
             }
+            
+            // Check for session highlighting
+            const sessionMatch = hash.match(/#session-(.+)/);
+            if (sessionMatch) {
+                const sessionId = sessionMatch[1];
+                setPendingScrollSession(sessionId);
+            }
         }
-    }, [user]);
+        
+        // Check for query parameter session
+        const sessionParam = searchParams.get('session');
+        if (sessionParam) {
+            setPendingScrollSession(sessionParam);
+        }
+    }, [user, searchParams]);
+
+    // Handle pending scroll after auth is loaded
+    useEffect(() => {
+        if (!authLoading && pendingScrollSession) {
+            handleSessionHighlight(pendingScrollSession);
+            setPendingScrollSession(null);
+        }
+    }, [authLoading, pendingScrollSession]);
+
+    // Handle hash changes (when navigating from search)
+    useEffect(() => {
+        const handleHashChange = () => {
+            const hash = window.location.hash;
+            
+            // Check for session highlighting
+            const sessionMatch = hash.match(/#session-(.+)/);
+            if (sessionMatch) {
+                const sessionId = sessionMatch[1];
+                handleSessionHighlight(sessionId);
+            }
+        };
+
+        window.addEventListener('hashchange', handleHashChange);
+        return () => window.removeEventListener('hashchange', handleHashChange);
+    }, []);
 
     const toggleSelect = (sessionId: string) => {
         if (!user) {
@@ -142,17 +279,32 @@ export default function SchedulePage() {
     ).length;
 
     return (
-        <div className="container mx-auto py-8 px-4 max-w-7xl">
-            <div className="flex items-start justify-between mb-6">
+        <div className="container mx-auto py-8 px-4 max-w-7xl pb-24 md:pb-8">
+            {/* Sticky Save Button for Mobile */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t p-4 shadow-lg">
+                <Button 
+                    onClick={user ? saveAgenda : () => setShowAuthDialog(true)}
+                    disabled={isLoading || selectedCount === 0}
+                    className="w-full gap-2"
+                    variant={justSaved ? "secondary" : "default"}
+                >
+                    <Save className="h-4 w-4" />
+                    {isLoading ? "Saving..." : justSaved ? "Saved!" : user ? "Save Agenda" : "Sign In to Save"}
+                    {selectedCount > 0 && <span className="ml-auto">({selectedCount})</span>}
+                </Button>
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between mb-6 gap-4">
                 <div>
-                    <h1 className="text-4xl font-extrabold text-primary mb-2">Conference Schedule</h1>
-                    <p className="text-muted-foreground">
+                    <h1 className="text-3xl md:text-4xl font-extrabold text-primary mb-2">Conference Schedule</h1>
+                    <p className="text-sm md:text-base text-muted-foreground">
                         {user 
                             ? "Click on sessions to add them to your personal agenda" 
                             : "Sign in to save your agenda and sync across devices"}
                     </p>
                 </div>
-                <div className="flex flex-col items-end gap-2">
+                {/* Desktop Save Button */}
+                <div className="hidden md:flex flex-col items-end gap-2">
                     <Button 
                         onClick={user ? saveAgenda : () => setShowAuthDialog(true)}
                         disabled={isLoading || selectedCount === 0}
@@ -209,6 +361,7 @@ export default function SchedulePage() {
                                             <ScheduleGridCell
                                                 session={plenaryOrService}
                                                 isSelected={selectedSessions.includes(plenaryOrService.id)}
+                                                isHighlighted={highlightedSession === plenaryOrService.id}
                                                 onToggleSelect={toggleSelect}
                                             />
                                         </div>
@@ -224,34 +377,61 @@ export default function SchedulePage() {
 
                                 return (
                                     <div key={timeSlot} className="border rounded-lg overflow-hidden">
-                                        {/* Time header and track columns */}
-                                        <div 
-                                            className="grid gap-2 p-4"
-                                            style={{ gridTemplateColumns: `120px repeat(${scheduleGrid.tracks.length}, 1fr)` }}
-                                        >
-                                            <div className="text-sm font-medium text-muted-foreground pt-2">
+                                        {/* Mobile: Stacked layout */}
+                                        <div className="md:hidden p-4 space-y-3">
+                                            <div className="text-sm font-semibold text-primary pb-2 border-b">
                                                 {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                             </div>
                                             {scheduleGrid.tracks.map(track => {
                                                 const sessions = getSessionsForSlot(timeSlot, track);
+                                                if (sessions.length === 0) return null;
                                                 return (
-                                                    <div key={track} className="relative">
-                                                        {sessions.length > 0 ? (
-                                                            sessions.map(session => (
-                                                                <div key={session.id} className="mb-2 last:mb-0">
-                                                                    <ScheduleGridCell
-                                                                        session={session}
-                                                                        isSelected={selectedSessions.includes(session.id)}
-                                                                        onToggleSelect={toggleSelect}
-                                                                    />
-                                                                </div>
-                                                            ))
-                                                        ) : (
-                                                            <div className="h-full min-h-[60px] border-2 border-dashed border-muted/50 rounded-lg" />
-                                                        )}
+                                                    <div key={track} className="space-y-2">
+                                                        {sessions.map(session => (
+                                                            <ScheduleGridCell
+                                                                key={session.id}
+                                                                session={session}
+                                                                isSelected={selectedSessions.includes(session.id)}
+                                                                isHighlighted={highlightedSession === session.id}
+                                                                onToggleSelect={toggleSelect}
+                                                            />
+                                                        ))}
                                                     </div>
                                                 );
                                             })}
+                                        </div>
+
+                                        {/* Desktop: Grid layout with horizontal scroll */}
+                                        <div className="hidden md:block overflow-x-auto">
+                                            <div 
+                                                className="grid gap-2 p-4 min-w-max"
+                                                style={{ gridTemplateColumns: `120px repeat(${scheduleGrid.tracks.length}, minmax(250px, 1fr))` }}
+                                            >
+                                                <div className="text-sm font-medium text-muted-foreground pt-2">
+                                                    {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                </div>
+                                                {scheduleGrid.tracks.map(track => {
+                                                    const sessions = getSessionsForSlot(timeSlot, track);
+                                                    return (
+                                                        <div key={track} className="relative">
+                                                            {sessions.length > 0 ? (
+                                                                sessions.map(session => (
+                                                                    <div key={session.id} className="mb-2 last:mb-0">
+                                                                        <ScheduleGridCell
+                                                                            session={session}
+                                                                            isSelected={selectedSessions.includes(session.id)}
+                                                                            isHighlighted={highlightedSession === session.id}
+                                                                            onToggleSelect={toggleSelect}
+                                                                        />
+                                                                    </div>
+                                                                ))
+                                                            ) : (
+                                                                <div className="h-full min-h-[60px] border-2 border-dashed border-muted/50 rounded-lg" />
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                     </div>
                                 );

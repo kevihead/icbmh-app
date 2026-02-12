@@ -8,10 +8,11 @@ import Link from "next/link";
 interface ScheduleGridCellProps {
     session: Session;
     isSelected: boolean;
+    isHighlighted?: boolean;
     onToggleSelect: (sessionId: string) => void;
 }
 
-export function ScheduleGridCell({ session, isSelected, onToggleSelect }: ScheduleGridCellProps) {
+export function ScheduleGridCell({ session, isSelected, isHighlighted = false, onToggleSelect }: ScheduleGridCellProps) {
     const formatTime = (date: Date) => {
         return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
@@ -32,6 +33,7 @@ export function ScheduleGridCell({ session, isSelected, onToggleSelect }: Schedu
     if (session.isService) {
         return (
             <div
+                id={`session-${session.id}`}
                 className="border-2 border-dashed border-muted bg-muted/20 p-3 rounded-lg"
                 style={{ minHeight: `${height}px` }}
             >
@@ -48,11 +50,13 @@ export function ScheduleGridCell({ session, isSelected, onToggleSelect }: Schedu
 
     return (
         <div
+            id={`session-${session.id}`}
             onClick={handleClick}
             className={cn(
                 "border-2 p-3 rounded-lg cursor-pointer transition-all hover:shadow-md",
                 isSelected && "border-primary bg-primary/10 shadow-lg",
-                !isSelected && "border-border bg-card hover:border-primary/50"
+                !isSelected && "border-border bg-card hover:border-primary/50",
+                isHighlighted && "ring-2 ring-primary shadow-xl scale-[1.02]"
             )}
             style={{ minHeight: `${height}px` }}
         >

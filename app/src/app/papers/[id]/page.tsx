@@ -101,7 +101,7 @@ export default function PaperPage({ params }: { params: { id: string } }) {
                             <p className="text-sm text-muted-foreground">
                                 This paper is associated with session: <span className="font-mono">{paper.sessionId}</span>
                             </p>
-                            <Link href="/schedule">
+                            <Link href={`/schedule?session=${paper.sessionId}`}>
                                 <Button variant="outline" className="mt-2">
                                     View in Schedule
                                 </Button>
